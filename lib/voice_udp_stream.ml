@@ -24,7 +24,9 @@ type call_msg = [ `DiscoverIP ]
 type call_reply = [ `DiscoverIP of string (* ip *) * int (* port *) ]
 
 type cast_msg =
-  [ `SecretKey of int list | `FrameSource of Eio.Flow.source_ty Eio.Resource.t ]
+  [ `SecretKey of int list
+  | `Skip
+  | `FrameSource of Eio.Flow.source_ty Eio.Resource.t ]
 
 type basic_msg = (call_msg, call_reply, cast_msg) Actaa.Gen_server.basic_msg
 type msg = [ basic_msg | `Timeout of string ]
@@ -53,7 +55,6 @@ let discover_ip ssrc send recv =
   Cstruct.BE.set_uint16 buf 2 70;
   Cstruct.BE.set_uint16 buf 4 ssrc;
   send [ buf ];
-
   (* IP Discovery: receive a response and extract the address and port *)
   let buf = Cstruct.create 74 in
   let _, r = recv buf in
@@ -77,7 +78,6 @@ let send_frame state frame =
     | `PCM_S16LE pcm -> Opus.Encoder.encode state.opus_encoder (`S16LE pcm)
     | `Opus opus -> Bytes.of_string opus
   in
-
   (* Build RTP header *)
   let header = Cstruct.create 12 in
   Cstruct.set_uint8 header 0 0x80;
@@ -85,7 +85,6 @@ let send_frame state frame =
   Cstruct.BE.set_uint16 header 2 state.seq_num (* Sequence *);
   Cstruct.BE.set_uint32 header 4 (Int32.of_int state.timestamp) (* Timestamp *);
   Cstruct.BE.set_uint32 header 8 (Int32.of_int state.ssrc);
-
   (* Encrypt the voice data *)
   let nonce =
     let buf = Cstruct.create 24 in
@@ -96,10 +95,8 @@ let send_frame state frame =
     Sodium.Secret_box.Bytes.secret_box (Option.get state.secret_key) opus nonce
     |> Cstruct.of_bytes
   in
-
   (* Send the data *)
   udp_send state [ header; ctxt ];
-
   (* Increment sequence number and timestamp *)
   {
     state with
@@ -120,7 +117,6 @@ let read_at_most src buf =
 let start_sending_frames_from_source env ~sw state self =
   let clock = Eio.Stdenv.clock env in
   let start_time = Eio.Time.now clock in
-
   (* Choose correct speaking source *)
   let state =
     match state.speaking_source with
@@ -132,7 +128,6 @@ let start_sending_frames_from_source env ~sw state self =
             send_speaking state true;
             { state with speaking_source; queued_sources })
   in
-
   match state.speaking_source with
   | None -> state
   | Some src ->
@@ -150,7 +145,6 @@ let start_sending_frames_from_source env ~sw state self =
           (fun i ->
             Cstruct.sub buf (i * frame_len) frame_len |> Cstruct.to_string)
       in
-
       (* Send the frames *)
       let state =
         frames
@@ -158,7 +152,6 @@ let start_sending_frames_from_source env ~sw state self =
              (fun state frame -> send_frame state (`PCM_S16LE frame))
              state
       in
-
       (* Sleep while sending *)
       let end_time = Eio.Time.now clock in
       let diff = end_time -. start_time in
@@ -166,7 +159,6 @@ let start_sending_frames_from_source env ~sw state self =
         (second_per_frame *. float_of_int (List.length frames)) -. diff
       in
       Actaa.Timer.spawn env ~sw ~id:"" ~seconds ~target:self |> ignore;
-
       if source_alive then state
       else
         (* Send silence frames *)
@@ -230,6 +222,7 @@ class t =
           in
           `NoReply { state with secret_key }
       | `FrameSource _ when Option.is_none state.secret_key -> `NoReply state
+      | `Skip -> `NoReply { state with speaking_source = None }
       | `FrameSource src -> (
           let state =
             { state with queued_sources = Fqueue.add state.queued_sources src }
@@ -250,6 +243,7 @@ let connect env sw (t : t) ({ vgw; ip; port; ssrc; _ } : connection_param) =
   t |> Actaa.Gen_server.start env ~sw { ip; port; ssrc; vgw }
 
 let send_frame_source t src = Actaa.Gen_server.cast t (`FrameSource src)
+let skip_speaking_frame_source t = Actaa.Gen_server.cast t `Skip
 let attach_secret_key t key = Actaa.Gen_server.cast t (`SecretKey key)
 let close t = Actaa.Gen_server.stop t
 

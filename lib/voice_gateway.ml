@@ -13,7 +13,8 @@ type cast_msg =
   | `VoiceServer of voice_server
   | `FrameSource of Eio.Flow.source_ty Eio.Resource.t
   | `Speaking of int (* ssrc *) * bool (* speaking *)
-  | `Stop ]
+  | `Stop
+  | `Skip ]
 
 type basic_msg = (call_msg, call_reply, cast_msg) Actaa.Gen_server.basic_msg
 type msg = [ basic_msg | `Timeout of [ `Heartbeat ] | Ws.Process.msg ]
@@ -79,14 +80,11 @@ class t =
       let token = (Option.get state.voice_server).token in
       let user_id = (Option.get state.voice_state).user_id in
       let session_id = (Option.get state.voice_state).session_id in
-
       let conn = self#connect_ws env ~sw state in
-
       Voice_event.(
         Identify { server_id = state.guild_id; user_id; session_id; token }
         |> to_yojson)
       |> send_json conn;
-
       { state with status = Running; ws_conn = Some conn }
 
     method private start_running_if_ready env ~sw state =
@@ -173,6 +171,9 @@ class t =
       | `FrameSource src ->
           Voice_udp_stream.send_frame_source state.udp_stream src;
           `NoReply state
+      | `Skip ->
+          Voice_udp_stream.skip_speaking_frame_source state.udp_stream;
+          `NoReply state
       | `Speaking (ssrc, speaking) ->
           let send_json conn json =
             let content = Yojson.Safe.to_string json in
@@ -200,6 +201,7 @@ let start t env sw consumer ~guild_id =
   Actaa.Gen_server.start env ~sw { guild_id; consumer } t
 
 let stop t = Actaa.Gen_server.cast t `Stop
+let skip t = Actaa.Gen_server.cast t `Skip
 
 let attach_voice_state ~user_id ~session_id t =
   Actaa.Gen_server.cast t (`VoiceState { user_id; session_id })

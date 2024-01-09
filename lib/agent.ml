@@ -14,6 +14,7 @@ type play_voice = {
   src : [ `Pipe of Eio.Flow.source_ty Eio.Resource.t | `Ytdl of string ];
 }
 
+type skip = { guild_id : string }
 type get_voice_states = { guild_id : string; user_id : string }
 type consumer = Event.t Actaa.Gen_server.t_cast
 
@@ -41,6 +42,7 @@ type cast_msg =
   | `JoinChannel of join_channel
   | `LeaveChannel of leave_channel
   | `PlayVoice of play_voice
+  | `Skip of skip
   | `ForceResumeGateway ]
 
 type basic_msg = (call_msg, call_reply, cast_msg) Actaa.Gen_server.basic_msg
@@ -57,7 +59,17 @@ type state = {
 
 let spawn_youtubedl process_mgr ~sw ~stdout ~path:(executable : string) url =
   Eio.Process.spawn ~sw process_mgr ~stdout ~executable
-    [ executable; "-f"; "bestaudio"; "-o"; "-"; "-q"; "--no-warnings"; url ]
+    [
+      executable;
+      "-f";
+      "bestaudio";
+      "-o";
+      "-";
+      "-q";
+      "--no-warnings";
+      "--no-continue";
+      url;
+    ]
 
 let spawn_ffmpeg process_mgr ~sw ~stdin ~stdout ~path:(executable : string)
     ~options =
@@ -96,6 +108,11 @@ class t =
       | `LeaveChannel { guild_id } ->
           Gateway.send_voice_state_update ~guild_id ~self_mute:false
             ~self_deaf:false gw;
+          `NoReply state
+      | `Skip { guild_id } ->
+          (match State.voice st guild_id with
+          | None -> Logs.warn (fun m -> m "VoiceGateway is not available")
+          | Some gateway -> Voice_gateway.skip gateway);
           `NoReply state
       | `PlayVoice { guild_id; src } ->
           (match State.voice st guild_id with
@@ -156,6 +173,9 @@ let get_voice_states ~guild_id ~user_id (agent : t) =
 
 let play_voice ~guild_id ~src (agent : t) =
   Actaa.Gen_server.cast agent (`PlayVoice { guild_id; src })
+
+let skip ~guild_id (agent : t) =
+  Actaa.Gen_server.cast agent (`Skip { guild_id })
 
 let me (agent : t) =
   match Actaa.Gen_server.call agent `Me with `Me v -> v | _ -> assert false

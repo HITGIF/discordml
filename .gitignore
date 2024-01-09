@@ -30,3 +30,6 @@ _opam/
 note.md
 misc/
 Makefile
+
+*.out
+--Frag0
